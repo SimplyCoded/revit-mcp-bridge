@@ -382,11 +382,12 @@ namespace RevitMcpPlugin
         ///
         /// Rule JSON:
         ///   {
-        ///     "type":       "if_then",
-        ///     "if_param":   "FUNCTION_PARAM",  // BuiltInParameter name OR custom param name
-        ///     "if_value":   "Exterior",         // compared case-insensitively
-        ///     "set_param":  "SBB_IsExterior",
-        ///     "set_value":  "True"
+        ///     "type":        "if_then",
+        ///     "if_param":    "TypeName",   // BuiltInParameter name, "TypeName", or custom param name
+        ///     "if_operator": "starts_with" // equals (default) | starts_with | ends_with | contains
+        ///     "if_value":    "IWK-STB",    // compared case-insensitively
+        ///     "set_param":   "Comments",
+        ///     "set_value":   "test"
         ///   }
         /// </summary>
         private static void ApplyIfThenRule(
@@ -398,13 +399,22 @@ namespace RevitMcpPlugin
                 !rule.TryGetProperty("set_param", out var setP) ||
                 !rule.TryGetProperty("set_value", out var setV)) return;
 
-            string ifParam  = ifP.GetString()  ?? "";
-            string ifValue  = ifV.GetString()  ?? "";
-            string setParam = setP.GetString() ?? "";
-            string setValue = setV.GetString() ?? "";
+            string ifParam   = ifP.GetString()  ?? "";
+            string ifValue   = ifV.GetString()  ?? "";
+            string setParam  = setP.GetString() ?? "";
+            string setValue  = setV.GetString() ?? "";
+            string ifOperator = rule.TryGetProperty("if_operator", out var ifOp)
+                ? (ifOp.GetString() ?? "equals") : "equals";
 
             string actual = GetParamAsString(doc, elem, ifParam);
-            if (!string.Equals(actual, ifValue, StringComparison.OrdinalIgnoreCase)) return;
+            bool conditionMet = ifOperator switch
+            {
+                "starts_with" => actual.StartsWith(ifValue, StringComparison.OrdinalIgnoreCase),
+                "ends_with"   => actual.EndsWith(ifValue,   StringComparison.OrdinalIgnoreCase),
+                "contains"    => actual.Contains(ifValue,   StringComparison.OrdinalIgnoreCase),
+                _             => string.Equals(actual, ifValue, StringComparison.OrdinalIgnoreCase),
+            };
+            if (!conditionMet) return;
 
             var param = elem.LookupParameter(setParam);
             string current = param?.AsString() ?? "";
@@ -441,7 +451,10 @@ namespace RevitMcpPlugin
         /// </summary>
         private static string GetParamAsString(Document doc, Element elem, string paramName)
         {
-            // Shorthand for wall function
+            // Shorthands
+            if (paramName is "TypeName" or "ELEM_TYPE_NAME")
+                return elem.Name ?? "";
+
             if (paramName is "FUNCTION_PARAM" or "WallFunction" && elem is Wall wall)
                 return wall.WallType.Function.ToString();
 

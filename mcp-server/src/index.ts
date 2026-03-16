@@ -127,14 +127,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         "to 'target_param' (default: 'Material_Summary'). " +
                       "wall_function_flag: sets 'target_param' (default: 'IsExterior') to " +
                         "'exterior_value'/'interior_value' based on the wall type function. " +
-                      "if_then: if 'if_param' equals 'if_value' (case-insensitive), sets " +
-                        "'set_param' to 'set_value'.",
+                      "if_then: if 'if_param' matches 'if_value' via 'if_operator' (case-insensitive), sets " +
+                        "'set_param' to 'set_value'. Use 'TypeName' as if_param to match the element type name.",
                   },
                   target_param:   { type: "string", description: "Target parameter name (material_summary, wall_function_flag)." },
                   exterior_value: { type: "string", description: "Value to set when wall is Exterior (wall_function_flag)." },
                   interior_value: { type: "string", description: "Value to set when wall is not Exterior (wall_function_flag)." },
-                  if_param:  { type: "string", description: "Condition parameter name or BuiltInParameter enum name (if_then)." },
-                  if_value:  { type: "string", description: "Expected value to match (if_then)." },
+                  if_param:    { type: "string", description: "Condition parameter. Use 'TypeName' for element type name, a BuiltInParameter enum name, or a custom param name (if_then)." },
+                  if_operator: { type: "string", enum: ["equals", "starts_with", "ends_with", "contains"], description: "Comparison operator. Defaults to 'equals' (if_then)." },
+                  if_value:    { type: "string", description: "Value to match against (case-insensitive) (if_then)." },
                   set_param: { type: "string", description: "Parameter to set when condition matches (if_then)." },
                   set_value: { type: "string", description: "Value to write when condition matches (if_then)." },
                 },
