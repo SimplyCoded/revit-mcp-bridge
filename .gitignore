@@ -1,0 +1,18 @@
+# Config — contains secrets, never commit
+config.json
+
+# Node
+mcp-server/node_modules/
+mcp-server/dist/
+
+# C# build artifacts
+revit-plugin/bin/
+revit-plugin/obj/
+revit-plugin/.vs/
+
+# Local tool configs
+.claude/
+CLAUDE.md
+GEMINI.md
+.env
+*.user
