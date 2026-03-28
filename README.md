@@ -3,7 +3,7 @@
 Connects an AI assistant (Claude, Gemini CLI) to Autodesk Revit via the Model Context Protocol. Lets you query and validate your Revit structural model directly from a chat interface.
 
 ```
-MCP Client (Claude / Gemini) <--stdio--> mcp-server (Node.js) <--HTTP--> revit-plugin (C# inside Revit)
+MCP Client (Claude / Gemini) <--stdio--> server (Node.js) <--HTTP--> revit-plugin (C# inside Revit)
 ```
 
 ## Features
@@ -43,7 +43,7 @@ cp config.example.json config.json
 ### 2. MCP Server
 
 ```bash
-cd mcp-server
+cd server
 npm install
 npm run build
 ```
@@ -81,7 +81,7 @@ Then run `wsl --shutdown` from PowerShell and reopen WSL. This allows WSL to rea
   "mcpServers": {
     "revit-bridge": {
       "command": "node",
-      "args": ["/path/to/revit-mcp-bridge/mcp-server/dist/index.js"]
+      "args": ["/path/to/revit-mcp-bridge/server/dist/index.js"]
     }
   }
 }
@@ -94,7 +94,7 @@ Then run `wsl --shutdown` from PowerShell and reopen WSL. This allows WSL to rea
   "mcpServers": {
     "revit-bridge": {
       "command": "node",
-      "args": ["/path/to/revit-mcp-bridge/mcp-server/dist/index.js"]
+      "args": ["/path/to/revit-mcp-bridge/server/dist/index.js"]
     }
   }
 }
