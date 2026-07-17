@@ -1,10 +1,12 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -269,6 +271,11 @@ namespace RevitMcpPlugin
             "get_project_info",
             "validate_parameters",
             "apply_parameter_rules",
+            "say_hello",
+            "get_sheets",
+            "get_title_blocks",
+            "create_sheet",
+            "duplicate_sheet",
         };
 
         public void Execute(UIApplication app)
@@ -310,6 +317,11 @@ namespace RevitMcpPlugin
                         "get_project_info"      => GetProjectInfo(doc),
                         "validate_parameters"   => ParameterEngine.ValidateParameters(doc, args),
                         "apply_parameter_rules" => ParameterEngine.ApplyParameterRules(doc, args),
+                        "say_hello"             => HandleSayHello(app, doc),
+                        "get_sheets"            => GetSheets(doc),
+                        "get_title_blocks"      => GetTitleBlocks(doc),
+                        "create_sheet"          => CreateSheet(doc, args),
+                        "duplicate_sheet"       => DuplicateSheet(doc, args),
                         _                       => "{\"error\":\"Unhandled command\"}",
                     };
                 }
@@ -330,6 +342,156 @@ namespace RevitMcpPlugin
             string name = doc.ProjectInformation?.Name ?? "Unnamed Project";
             string escaped = name.Replace("\\", "\\\\").Replace("\"", "\\\"");
             return $"{{\"projectName\":\"{escaped}\",\"status\":\"Success\"}}";
+        }
+
+        private static string HandleSayHello(UIApplication app, Document doc)
+        {
+            RevitTaskDialog.Show("MCP Bridge", "Hello from Claude!");
+            string version = app.Application.VersionNumber;
+            string title = doc.Title ?? "No Document";
+            // JSON-sichere Zeichenersetzung
+            title = title.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            return $"{{\"status\":\"ok\",\"revit_version\":\"{version}\",\"project_title\":\"{title}\"}}";
+        }
+
+        // ── Sheet tools ─────────────────────────────────────────────────────────
+
+        private static string GetSheets(Document doc)
+        {
+            var sheets = new FilteredElementCollector(doc)
+                .OfClass(typeof(ViewSheet))
+                .Cast<ViewSheet>()
+                .Select(s =>
+                {
+                    var tb = new FilteredElementCollector(doc, s.Id)
+                        .OfCategory(BuiltInCategory.OST_TitleBlocks)
+                        .OfClass(typeof(FamilyInstance))
+                        .FirstOrDefault();
+                    return new
+                    {
+                        id            = s.Id.Value,
+                        sheetNumber   = s.SheetNumber,
+                        sheetName     = s.Name,
+                        titleBlockId  = tb?.Id.Value ?? -1,
+                        viewportCount = s.GetAllViewports().Count,
+                    };
+                })
+                .ToList();
+            return JsonSerializer.Serialize(new { sheets });
+        }
+
+        private static string GetTitleBlocks(Document doc)
+        {
+            var titleBlockTypes = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol))
+                .OfCategory(BuiltInCategory.OST_TitleBlocks)
+                .Cast<FamilySymbol>()
+                .Select(t => new
+                {
+                    id         = t.Id.Value,
+                    familyName = t.FamilyName,
+                    typeName   = t.Name,
+                })
+                .ToList();
+            return JsonSerializer.Serialize(new { titleBlockTypes });
+        }
+
+        private static string CreateSheet(Document doc, JsonElement args)
+        {
+            string sheetNumber = args.TryGetProperty("sheetNumber", out var sn)
+                ? sn.GetString() ?? "" : "";
+            string sheetName = args.TryGetProperty("sheetName", out var name)
+                ? name.GetString() ?? "" : "";
+            var titleBlockTypeId = args.TryGetProperty("titleBlockTypeId", out var tbId)
+                ? new ElementId((long)tbId.GetInt32()) : ElementId.InvalidElementId;
+
+            using var tx = new Transaction(doc, "MCP: Create Sheet");
+            tx.Start();
+            var sheet = ViewSheet.Create(doc, titleBlockTypeId);
+            sheet.SheetNumber = sheetNumber;
+            sheet.Name        = sheetName;
+            tx.Commit();
+
+            return JsonSerializer.Serialize(new
+            {
+                status      = "Success",
+                id          = sheet.Id.Value,
+                sheetNumber = sheet.SheetNumber,
+                sheetName   = sheet.Name,
+            });
+        }
+
+        private static string DuplicateSheet(Document doc, JsonElement args)
+        {
+            int sourceSheetId = args.TryGetProperty("sourceSheetId", out var sid)
+                ? sid.GetInt32() : -1;
+            string newSheetNumber = args.TryGetProperty("newSheetNumber", out var nsn)
+                ? nsn.GetString() ?? "" : "";
+            string newSheetName = args.TryGetProperty("newSheetName", out var nn)
+                ? nn.GetString() ?? "" : "";
+
+            if (sourceSheetId < 0)
+                return "{\"error\":\"sourceSheetId is required\"}";
+
+            if (doc.GetElement(new ElementId((long)sourceSheetId)) is not ViewSheet sourceSheet)
+                return "{\"error\":\"Source sheet not found\"}";
+
+            // Title block type from the source sheet
+            var tbInstance = new FilteredElementCollector(doc, sourceSheet.Id)
+                .OfCategory(BuiltInCategory.OST_TitleBlocks)
+                .OfClass(typeof(FamilyInstance))
+                .FirstOrDefault();
+            var titleBlockTypeId = tbInstance?.GetTypeId() ?? ElementId.InvalidElementId;
+
+            int viewportsCopied  = 0;
+            int viewportsSkipped = 0;
+            var skippedViews     = new List<string>();
+
+            using var tx = new Transaction(doc, "MCP: Duplicate Sheet");
+            tx.Start();
+
+            var newSheet = ViewSheet.Create(doc, titleBlockTypeId);
+            newSheet.SheetNumber = newSheetNumber;
+            newSheet.Name        = newSheetName;
+
+            foreach (var vpId in sourceSheet.GetAllViewports())
+            {
+                if (doc.GetElement(vpId) is not Viewport vp) continue;
+                if (doc.GetElement(vp.ViewId) is not Autodesk.Revit.DB.View view) continue;
+
+                if (!view.CanViewBeDuplicated(ViewDuplicateOption.Duplicate))
+                {
+                    skippedViews.Add(view.Name);
+                    viewportsSkipped++;
+                    continue;
+                }
+
+                try
+                {
+                    var dupId  = view.Duplicate(ViewDuplicateOption.Duplicate);
+                    Viewport.Create(doc, newSheet.Id, dupId, vp.GetBoxCenter());
+                    viewportsCopied++;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[MCP DuplicateSheet] viewport skip: {ex.Message}");
+                    skippedViews.Add(view.Name);
+                    viewportsSkipped++;
+                }
+            }
+
+            tx.Commit();
+
+            return JsonSerializer.Serialize(new
+            {
+                status          = "Success",
+                id              = newSheet.Id.Value,
+                sheetNumber     = newSheet.SheetNumber,
+                sheetName       = newSheet.Name,
+                viewportsCopied,
+                viewportsSkipped,
+                skippedViews,
+            });
         }
     }
 }

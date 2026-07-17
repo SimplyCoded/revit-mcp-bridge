@@ -6,8 +6,9 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import * as modelQuery from "./tools/modelQuery.js";
 import * as parameters from "./tools/parameters.js";
+import * as sheets from "./tools/sheets.js";
 
-const toolModules = [modelQuery, parameters];
+const toolModules = [modelQuery, parameters, sheets];
 
 const server = new Server(
   {
