@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
+using RevitMcpPlugin.Commands;
 using RevitTaskDialog = Autodesk.Revit.UI.TaskDialog;
 
 namespace RevitMcpPlugin
@@ -29,25 +30,13 @@ namespace RevitMcpPlugin
             try
             {
                 string tabName = "MCP Bridge";
-
-                try
-                {
-                    application.CreateRibbonTab(tabName);
-                }
-                catch
-                {
-                    // Tab may already exist
-                }
+                try { application.CreateRibbonTab(tabName); } catch { }
 
                 RibbonPanel panel = application.CreateRibbonPanel(tabName, "Tools");
-
                 PushButtonData buttonData = new PushButtonData(
-                    "HelloWorld",
-                    "Hello\nWorld",
+                    "HelloWorld", "Hello\nWorld",
                     System.Reflection.Assembly.GetExecutingAssembly().Location,
-                    "RevitMcpPlugin.HelloWorldCommand"
-                );
-
+                    "RevitMcpPlugin.HelloWorldCommand");
                 panel.AddItem(buttonData);
 
                 _authToken = LoadAuthToken();
@@ -62,7 +51,6 @@ namespace RevitMcpPlugin
 
                 _handler = new McpCommandHandler();
                 _externalEvent = ExternalEvent.Create(_handler);
-
                 StartHttpServer();
 
                 RevitTaskDialog.Show("MCP Bridge", "Revit MCP Bridge Plugin Loaded Successfully!");
@@ -83,10 +71,8 @@ namespace RevitMcpPlugin
             return Result.Succeeded;
         }
 
-        private static string? _authToken; // set in OnStartup; null means plugin failed to load
+        private static string? _authToken;
 
-        // Returns the token string, or null if config is missing, unreadable, or uses the
-        // example/default value. Caller must refuse to start if null is returned.
         private static string? LoadAuthToken()
         {
             const string ExampleToken = "change-me-to-a-strong-random-secret";
@@ -108,25 +94,24 @@ namespace RevitMcpPlugin
                             token != OldDefault)
                             return token;
                     }
-                    catch { /* fall through */ }
-                    return null; // file found but token invalid — do not fall through
+                    catch { }
+                    return null;
                 }
                 dir = Path.GetDirectoryName(dir);
             }
-            return null; // no config.json found
+            return null;
         }
-        private const long MAX_REQUEST_SIZE = 1024 * 1024; // 1MB limit
 
-        private const int MaxQueueDepth        = 10;
-        private const int MaxConcurrentRequests = 3;
-        private static int _activeRequests      = 0;
+        private const long MAX_REQUEST_SIZE      = 1024 * 1024;
+        private const int  MaxQueueDepth         = 10;
+        private const int  MaxConcurrentRequests = 3;
+        private static int _activeRequests       = 0;
 
         private void StartHttpServer()
         {
             _isRunning = true;
             _httpListener = new HttpListener();
-            // Bind strictly to 127.0.0.1 for local-only development
-            _httpListener.Prefixes.Add("http://127.0.0.1:8080/revit/"); 
+            _httpListener.Prefixes.Add("http://127.0.0.1:8080/revit/");
             _httpListener.Start();
 
             Task.Run(async () =>
@@ -158,17 +143,14 @@ namespace RevitMcpPlugin
                     return;
                 }
 
-                // 1. Concurrency guard — increment first, then validate
                 int active = Interlocked.Increment(ref _activeRequests);
                 if (active > MaxConcurrentRequests || App.CommandQueue.Count >= MaxQueueDepth)
                 {
-                    // decrement happens in finally
                     context.Response.StatusCode = 429;
                     await WriteResponse(context, "{\"error\":\"Too many requests\"}");
                     return;
                 }
 
-                // 2. Check Auth Token
                 string? token = context.Request.Headers["X-Revit-MCP-Token"];
                 if (token != _authToken)
                 {
@@ -177,7 +159,6 @@ namespace RevitMcpPlugin
                     return;
                 }
 
-                // 2. Check Request Size
                 if (context.Request.ContentLength64 > MAX_REQUEST_SIZE)
                 {
                     context.Response.StatusCode = (int)HttpStatusCode.RequestEntityTooLarge;
@@ -186,17 +167,13 @@ namespace RevitMcpPlugin
                 }
 
                 using var reader = new StreamReader(
-                    context.Request.InputStream,
-                    context.Request.ContentEncoding
-                );
-
+                    context.Request.InputStream, context.Request.ContentEncoding);
                 string commandJson = await reader.ReadToEndAsync();
-                
-                // 3. Simple Validation (More robust JSON parsing recommended)
+
                 if (string.IsNullOrEmpty(commandJson) || !commandJson.Contains("\"command\""))
                 {
                     context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
-                    await WriteResponse(context, "{\"error\":\"Invalid JSON: 'command' field required\"}");
+                    await WriteResponse(context, "{\"error\":\"Invalid JSON: command field required\"}");
                     return;
                 }
 
@@ -204,7 +181,7 @@ namespace RevitMcpPlugin
                 CommandQueue.Enqueue((requestId, commandJson));
                 _externalEvent?.Raise();
 
-                int timeout = 300; // 30 seconds (300 * 100ms) — allows time for large-model checks
+                int timeout = 300;
                 while (!CommandResults.ContainsKey(requestId) && timeout > 0)
                 {
                     await Task.Delay(100);
@@ -242,16 +219,11 @@ namespace RevitMcpPlugin
             await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
         }
 
-        private void LogRequest(HttpListenerRequest request)
-        {
-            // Simple logging to Debug output (viewable in DebugView or VS)
+        private void LogRequest(HttpListenerRequest request) =>
             System.Diagnostics.Debug.WriteLine($"[{DateTime.Now}] {request.HttpMethod} {request.Url} from {request.RemoteEndPoint}");
-        }
 
-        private void LogError(string message)
-        {
+        private void LogError(string message) =>
             System.Diagnostics.Debug.WriteLine($"[{DateTime.Now}] ERROR: {message}");
-        }
     }
 
     [Transaction(TransactionMode.Manual)]
@@ -268,14 +240,39 @@ namespace RevitMcpPlugin
     {
         private static readonly HashSet<string> AllowedCommands = new()
         {
+            // Core
             "get_project_info",
             "validate_parameters",
             "apply_parameter_rules",
             "say_hello",
+            // Sheets
             "get_sheets",
             "get_title_blocks",
             "create_sheet",
             "duplicate_sheet",
+            // Phase 1 — model query
+            "get_current_view_info",
+            "get_current_view_elements",
+            "get_selected_elements",
+            "get_available_family_types",
+            "analyze_model_statistics",
+            "get_material_quantities",
+            "ai_element_filter",
+            // Phase 2 — creation
+            "create_level",
+            "create_grid",
+            "create_line_based_element",
+            "create_point_based_element",
+            "create_room",
+            "create_surface_based_element",
+            "create_structural_framing_system",
+            // Phase 2 — modification
+            "delete_element",
+            "operate_element",
+            "color_elements",
+            "create_dimensions",
+            "tag_all_walls",
+            "tag_all_rooms",
         };
 
         public void Execute(UIApplication app)
@@ -300,29 +297,56 @@ namespace RevitMcpPlugin
 
                     if (!AllowedCommands.Contains(cmdName))
                     {
-                        App.CommandResults.TryAdd(queued.RequestId, $"{{\"error\":\"Unknown command: {cmdName}\"}}");
+                        App.CommandResults.TryAdd(queued.RequestId,
+                            $"{{\"error\":\"Unknown command: {cmdName}\"}}");
                         continue;
                     }
 
                     if (doc == null)
                     {
-                        App.CommandResults.TryAdd(queued.RequestId, "{\"error\":\"No active Revit document open\"}");
+                        App.CommandResults.TryAdd(queued.RequestId,
+                            "{\"error\":\"No active Revit document open\"}");
                         continue;
                     }
 
-                    root.TryGetProperty("args", out var args); // default JsonElement if absent
+                    root.TryGetProperty("args", out var args);
 
                     result = cmdName switch
                     {
+                        // Core
                         "get_project_info"      => GetProjectInfo(doc),
                         "validate_parameters"   => ParameterEngine.ValidateParameters(doc, args),
                         "apply_parameter_rules" => ParameterEngine.ApplyParameterRules(doc, args),
                         "say_hello"             => HandleSayHello(app, doc),
-                        "get_sheets"            => GetSheets(doc),
-                        "get_title_blocks"      => GetTitleBlocks(doc),
-                        "create_sheet"          => CreateSheet(doc, args),
-                        "duplicate_sheet"       => DuplicateSheet(doc, args),
-                        _                       => "{\"error\":\"Unhandled command\"}",
+                        // Sheets
+                        "get_sheets"      => GetSheets(doc),
+                        "get_title_blocks"=> GetTitleBlocks(doc),
+                        "create_sheet"    => CreateSheet(doc, args),
+                        "duplicate_sheet" => DuplicateSheet(doc, args),
+                        // Phase 1 — model query
+                        "get_current_view_info"      => ModelInfoCommands.GetCurrentViewInfo(app, doc),
+                        "get_current_view_elements"  => ModelInfoCommands.GetCurrentViewElements(app, doc, args),
+                        "get_selected_elements"      => ModelInfoCommands.GetSelectedElements(app, doc),
+                        "get_available_family_types" => ModelInfoCommands.GetAvailableFamilyTypes(doc, args),
+                        "analyze_model_statistics"   => ModelInfoCommands.AnalyzeModelStatistics(doc),
+                        "get_material_quantities"    => ModelInfoCommands.GetMaterialQuantities(doc, args),
+                        "ai_element_filter"          => ModelInfoCommands.AiElementFilter(doc, args),
+                        // Phase 2 — creation
+                        "create_level"                      => ElementCommands.CreateLevel(doc, args),
+                        "create_grid"                       => ElementCommands.CreateGrid(doc, args),
+                        "create_line_based_element"         => ElementCommands.CreateLineBasedElement(doc, args),
+                        "create_point_based_element"        => ElementCommands.CreatePointBasedElement(doc, args),
+                        "create_room"                       => ElementCommands.CreateRoom(doc, args),
+                        "create_surface_based_element"      => ElementCommands.CreateSurfaceBasedElement(doc, args),
+                        "create_structural_framing_system"  => ElementCommands.CreateStructuralFramingSystem(doc, args),
+                        // Phase 2 — modification
+                        "delete_element"    => ElementCommands.DeleteElement(doc, args),
+                        "operate_element"   => ElementCommands.OperateElement(doc, args),
+                        "color_elements"    => ElementCommands.ColorElements(app, doc, args),
+                        "create_dimensions" => ElementCommands.CreateDimensions(app, doc, args),
+                        "tag_all_walls"     => ElementCommands.TagAllWalls(app, doc, args),
+                        "tag_all_rooms"     => ElementCommands.TagAllRooms(app, doc, args),
+                        _                   => "{\"error\":\"Unhandled command\"}",
                     };
                 }
                 catch (Exception ex)
@@ -349,12 +373,9 @@ namespace RevitMcpPlugin
             RevitTaskDialog.Show("MCP Bridge", "Hello from Claude!");
             string version = app.Application.VersionNumber;
             string title = doc.Title ?? "No Document";
-            // JSON-sichere Zeichenersetzung
             title = title.Replace("\\", "\\\\").Replace("\"", "\\\"");
             return $"{{\"status\":\"ok\",\"revit_version\":\"{version}\",\"project_title\":\"{title}\"}}";
         }
-
-        // ── Sheet tools ─────────────────────────────────────────────────────────
 
         private static string GetSheets(Document doc)
         {
@@ -398,10 +419,8 @@ namespace RevitMcpPlugin
 
         private static string CreateSheet(Document doc, JsonElement args)
         {
-            string sheetNumber = args.TryGetProperty("sheetNumber", out var sn)
-                ? sn.GetString() ?? "" : "";
-            string sheetName = args.TryGetProperty("sheetName", out var name)
-                ? name.GetString() ?? "" : "";
+            string sheetNumber = args.TryGetProperty("sheetNumber", out var sn) ? sn.GetString() ?? "" : "";
+            string sheetName   = args.TryGetProperty("sheetName",   out var nm) ? nm.GetString() ?? "" : "";
             var titleBlockTypeId = args.TryGetProperty("titleBlockTypeId", out var tbId)
                 ? new ElementId((long)tbId.GetInt32()) : ElementId.InvalidElementId;
 
@@ -423,20 +442,15 @@ namespace RevitMcpPlugin
 
         private static string DuplicateSheet(Document doc, JsonElement args)
         {
-            int sourceSheetId = args.TryGetProperty("sourceSheetId", out var sid)
-                ? sid.GetInt32() : -1;
-            string newSheetNumber = args.TryGetProperty("newSheetNumber", out var nsn)
-                ? nsn.GetString() ?? "" : "";
-            string newSheetName = args.TryGetProperty("newSheetName", out var nn)
-                ? nn.GetString() ?? "" : "";
+            int sourceSheetId     = args.TryGetProperty("sourceSheetId",   out var sid) ? sid.GetInt32()    : -1;
+            string newSheetNumber = args.TryGetProperty("newSheetNumber",  out var nsn) ? nsn.GetString() ?? "" : "";
+            string newSheetName   = args.TryGetProperty("newSheetName",    out var nn)  ? nn.GetString()  ?? "" : "";
 
-            if (sourceSheetId < 0)
-                return "{\"error\":\"sourceSheetId is required\"}";
+            if (sourceSheetId < 0) return "{\"error\":\"sourceSheetId is required\"}";
 
             if (doc.GetElement(new ElementId((long)sourceSheetId)) is not ViewSheet sourceSheet)
                 return "{\"error\":\"Source sheet not found\"}";
 
-            // Title block type from the source sheet
             var tbInstance = new FilteredElementCollector(doc, sourceSheet.Id)
                 .OfCategory(BuiltInCategory.OST_TitleBlocks)
                 .OfClass(typeof(FamilyInstance))
@@ -468,7 +482,7 @@ namespace RevitMcpPlugin
 
                 try
                 {
-                    var dupId  = view.Duplicate(ViewDuplicateOption.Duplicate);
+                    var dupId = view.Duplicate(ViewDuplicateOption.Duplicate);
                     Viewport.Create(doc, newSheet.Id, dupId, vp.GetBoxCenter());
                     viewportsCopied++;
                 }

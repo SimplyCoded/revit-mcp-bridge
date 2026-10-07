@@ -5,39 +5,42 @@ export const tools: Tool[] = [
   {
     name: "get_sheets",
     description:
-      "List all sheets in the currently open Revit project. " +
-      "Returns sheet number, name, element ID, title block ID, and placed viewport count for each sheet.",
-    inputSchema: { type: "object", properties: {} },
+      "Get all sheets in the Revit project. Returns sheet number, name, ID, title block ID, and viewport count for each sheet.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
   },
   {
     name: "get_title_blocks",
     description:
-      "List all title block family types loaded in the Revit project. " +
-      "Use the returned IDs when calling create_sheet or duplicate_sheet.",
-    inputSchema: { type: "object", properties: {} },
+      "Get all title block family types loaded in the project. Returns family name, type name, and element ID. Use the IDs with create_sheet.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
   },
   {
     name: "create_sheet",
     description:
-      "Create a new empty sheet in the Revit project. " +
-      "Use get_title_blocks to find available title block type IDs.",
+      "Create a new sheet in the Revit project. Use get_title_blocks to find valid titleBlockTypeId values.",
     inputSchema: {
       type: "object",
       required: ["sheetNumber", "sheetName"],
       properties: {
         sheetNumber: {
           type: "string",
-          description: "Sheet number, e.g. 'A-101'. Must be unique in the project.",
+          description: "Sheet number (e.g. 'A-101', 'S-001'). Must be unique in the project.",
         },
         sheetName: {
           type: "string",
-          description: "Sheet name, e.g. 'Floor Plan - Level 1'.",
+          description: "Sheet name / title (e.g. 'Ground Floor Plan').",
         },
         titleBlockTypeId: {
           type: "integer",
           description:
             "Element ID of the title block family type to use. " +
-            "Omit to create a sheet without a title block.",
+            "Use get_title_blocks to find valid IDs. If omitted, no title block is placed.",
         },
       },
     },
@@ -45,10 +48,8 @@ export const tools: Tool[] = [
   {
     name: "duplicate_sheet",
     description:
-      "Duplicate an existing sheet: creates a new sheet with the same title block, " +
-      "then duplicates each placed view onto the new sheet. " +
-      "Note: each view is independently duplicated (Revit does not allow the same view on two sheets). " +
-      "Views that cannot be duplicated (e.g. schedules, legends) are skipped and reported.",
+      "Duplicate an existing sheet including all its viewports. " +
+      "Each duplicatable view is copied as an independent view on the new sheet.",
     inputSchema: {
       type: "object",
       required: ["sourceSheetId", "newSheetNumber", "newSheetName"],
@@ -59,11 +60,11 @@ export const tools: Tool[] = [
         },
         newSheetNumber: {
           type: "string",
-          description: "Sheet number for the new sheet. Must be unique in the project.",
+          description: "Sheet number for the new duplicate sheet (must be unique).",
         },
         newSheetName: {
           type: "string",
-          description: "Name for the new sheet.",
+          description: "Sheet name for the new duplicate sheet.",
         },
       },
     },
@@ -74,30 +75,9 @@ export async function handleCall(
   name: string,
   args: Record<string, unknown>
 ): Promise<CallToolResult | undefined> {
-  if (name === "get_sheets") return postToRevit("get_sheets", {});
+  if (name === "get_sheets")       return postToRevit("get_sheets", {});
   if (name === "get_title_blocks") return postToRevit("get_title_blocks", {});
-
-  if (name === "create_sheet") {
-    const { sheetNumber, sheetName, titleBlockTypeId } = args as {
-      sheetNumber: string;
-      sheetName: string;
-      titleBlockTypeId?: number;
-    };
-    return postToRevit("create_sheet", {
-      sheetNumber,
-      sheetName,
-      ...(titleBlockTypeId !== undefined ? { titleBlockTypeId } : {}),
-    });
-  }
-
-  if (name === "duplicate_sheet") {
-    const { sourceSheetId, newSheetNumber, newSheetName } = args as {
-      sourceSheetId: number;
-      newSheetNumber: string;
-      newSheetName: string;
-    };
-    return postToRevit("duplicate_sheet", { sourceSheetId, newSheetNumber, newSheetName });
-  }
-
+  if (name === "create_sheet")     return postToRevit("create_sheet", args);
+  if (name === "duplicate_sheet")  return postToRevit("duplicate_sheet", args);
   return undefined;
 }

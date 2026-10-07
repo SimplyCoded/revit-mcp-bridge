@@ -1,51 +1,75 @@
 import axios from "axios";
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-interface RevitConfig {
-  revitPluginUrl?: string;
-  authToken?: string;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+interface Config {
+  host?: string;
+  port?: number;
+  authToken: string;
 }
 
-function loadConfig(): RevitConfig {
-  try {
-    const configPath = resolve(__dirname, "../../../config.json");
-    return JSON.parse(readFileSync(configPath, "utf-8"));
-  } catch {
-    return {};
+function loadConfig(): Config {
+  const configPath = path.resolve(__dirname, "../../../config.json");
+  if (!fs.existsSync(configPath)) {
+    throw new Error(
+      `config.json not found at ${configPath}. ` +
+        "Copy config.example.json to config.json and set a strong authToken."
+    );
   }
+  const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Config;
+  if (!raw.authToken || raw.authToken === "change-me-to-a-strong-random-secret") {
+    throw new Error(
+      "config.json authToken is missing or still the example value. " +
+        "Set a strong unique secret before starting the server."
+    );
+  }
+  return raw;
 }
 
-const config = loadConfig();
-const REVIT_PLUGIN_URL = config.revitPluginUrl ?? "http://127.0.0.1:8080/revit/";
-const AUTH_TOKEN = config.authToken ?? "revit-mcp-secret-2025";
+let _config: Config | null = null;
+
+function getConfig(): Config {
+  if (!_config) _config = loadConfig();
+  return _config;
+}
 
 export async function postToRevit(
   command: string,
-  args: Record<string, unknown>,
-  timeoutMs = 15000
+  args: Record<string, unknown> = {},
+  timeoutMs = 10000
 ): Promise<CallToolResult> {
+  const cfg = getConfig();
+  const host = cfg.host ?? "127.0.0.1";
+  const port = cfg.port ?? 8080;
+  const url = `http://${host}:${port}/revit/`;
+
   try {
-    const response = await axios.post(
-      REVIT_PLUGIN_URL,
+    const { data } = await axios.post(
+      url,
       { command, args },
       {
-        headers: {
-          "X-Revit-MCP-Token": AUTH_TOKEN,
-          "Content-Type": "application/json",
-        },
         timeout: timeoutMs,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Revit-MCP-Token": cfg.authToken,
+        },
       }
     );
     return {
-      content: [{ type: "text" as const, text: JSON.stringify(response.data, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify(data) }],
     };
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
+  } catch (err: unknown) {
+    const msg =
+      err instanceof Error
+        ? err.message
+        : "Unknown error communicating with Revit plugin";
     return {
-      content: [{ type: "text" as const, text: `Error communicating with Revit: ${msg}` }],
       isError: true,
+      content: [{ type: "text", text: `Revit bridge error: ${msg}` }],
     };
   }
 }
